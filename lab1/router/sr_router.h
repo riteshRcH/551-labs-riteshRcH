@@ -70,12 +70,10 @@ void sr_handlepacket(struct sr_instance* , uint8_t * , unsigned int , char* );
 void process_ip_packet(struct sr_instance *, uint8_t *, unsigned int, char *);
 void send_fabricated_icmp_packet(struct sr_instance *, uint8_t *, unsigned int, char *, uint8_t, uint8_t, struct sr_if *);
 void process_arp_packet(struct sr_instance *, uint8_t *, unsigned int, char *);
-struct sr_rt *calculate_longest_prefix(struct sr_instance *, uint32_t);
-
 
 /* -- sr_if.c -- */
 struct sr_if *sr_get_intf(struct sr_instance *sr, const char *name);
-void sr_add_intf(struct sr_instance* , const char* );
+void sr_add_interface(struct sr_instance* , const char* );
 void sr_set_ether_ip(struct sr_instance* , uint32_t );
 void sr_set_ether_addr(struct sr_instance* , const unsigned char* );
 void sr_print_if_list(struct sr_instance* );

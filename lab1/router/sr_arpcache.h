@@ -146,18 +146,10 @@ void sr_arpcache_dump(struct sr_arpcache *cache);
 int   sr_arpcache_init(struct sr_arpcache *cache);
 int   sr_arpcache_destroy(struct sr_arpcache *cache);
 void *sr_arpcache_timeout(void *cache_ptr);
-void sr_arpreq_destroy_no_lock(struct sr_arpcache *, struct sr_arpreq *);
 void process_arpreq(struct sr_instance *, struct sr_arpreq *);
 void send_fabricated_icmp_packet(struct sr_instance *, uint8_t *, unsigned int, char *, uint8_t, uint8_t, struct sr_if *);
-struct sr_rt *calculate_longest_prefix(struct sr_instance *, uint32_t);
-sr_arp_hdr_t *get_arp_header(uint8_t *);
-sr_ethernet_hdr_t *get_ethernet_header(uint8_t *);
 struct sr_if *get_intf_from_ip(struct sr_instance *, uint32_t);
 struct sr_if *get_intf_from_eth(struct sr_instance *, uint8_t *);
 struct sr_if *sr_get_intf(struct sr_instance *, const char *);
 struct sr_if *get_interface_from_eth(struct sr_instance *, uint8_t *);
-sr_icmp_hdr_t *get_icmp_header(uint8_t *);
-sr_ethernet_hdr_t *get_ethernet_header(uint8_t *);
-sr_ip_hdr_t *get_ip_header(uint8_t *);
-sr_arp_hdr_t *get_arp_header(uint8_t *);
 #endif

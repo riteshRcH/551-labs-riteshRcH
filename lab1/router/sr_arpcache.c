@@ -27,26 +27,6 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
     }
 }
 
-sr_icmp_hdr_t *get_icmp_header(uint8_t *packet)
-{
-    return (sr_icmp_hdr_t *)(packet + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
-}
-
-sr_ethernet_hdr_t *get_ethernet_header(uint8_t *packet)
-{
-    return (sr_ethernet_hdr_t *)packet;
-}
-
-sr_ip_hdr_t *get_ip_header(uint8_t *packet)
-{
-    return (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-}
-
-sr_arp_hdr_t *get_arp_header(uint8_t *packet)
-{
-    return (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-}
-
 /* You should not need to touch the rest of this code. */
 
 /* Checks if an IP->MAC mapping is in the cache. IP is in network byte order.
@@ -308,7 +288,7 @@ void process_arpreq(struct sr_instance *sr, struct sr_arpreq *request) {
 		    uint8_t *request_packet_arp = (uint8_t *) malloc(length_of_arp_packet);
 		    memset(request_packet_arp, 0, sizeof(uint8_t) * length_of_arp_packet);
 
-		    sr_arp_hdr_t *sending_arp_header = get_arp_header(request_packet_arp);
+		    sr_arp_hdr_t *sending_arp_header = (sr_arp_hdr_t *)(request_packet_arp + sizeof(sr_ethernet_hdr_t));
 
 		    sending_arp_header->ar_op = htons(arp_op_request);
 		    memset(sending_arp_header->ar_tha, 0xff, ETHER_ADDR_LEN);
@@ -320,7 +300,7 @@ void process_arpreq(struct sr_instance *sr, struct sr_arpreq *request) {
 		    sending_arp_header->ar_pln = sizeof(uint32_t);
 		    sending_arp_header->ar_hrd = htons(arp_hrd_ethernet);
 
-		    sr_ethernet_hdr_t *sending_ethernet_header = get_ethernet_header(request_packet_arp);
+		    sr_ethernet_hdr_t *sending_ethernet_header = (sr_ethernet_hdr_t *)request_packet_arp;
 
 		    memset(sending_ethernet_header->ether_dhost, 0xff, sizeof(uint8_t) * ETHER_ADDR_LEN);		    
 		    sending_ethernet_header->ether_type = htons(ethertype_arp);
@@ -338,7 +318,7 @@ void process_arpreq(struct sr_instance *sr, struct sr_arpreq *request) {
             struct sr_packet *packet = request->packets;
 
             while (packet) {
-                struct sr_if *sending_intf = get_interface_from_eth(sr, (get_ethernet_header(packet->buf))->ether_dhost);
+                struct sr_if *sending_intf = get_interface_from_eth(sr, ((sr_ethernet_hdr_t *)(packet->buf))->ether_dhost);
                 if (sending_intf == NULL) {
                     fprintf(stderr, "Ethernet address in original packet doesnt match any interface\n");
                     packet = packet->next;

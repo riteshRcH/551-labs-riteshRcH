@@ -98,8 +98,8 @@ void process_ip_packet(struct sr_instance *sr,
         return;
     }
 
-    sr_ip_hdr_t *received_ip_hdr = get_ip_header(packet);
-    sr_icmp_hdr_t *original_icmp_header = get_icmp_header(packet);
+    sr_ip_hdr_t *received_ip_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+    sr_icmp_hdr_t *original_icmp_header = (sr_icmp_hdr_t *)(packet + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
     /* Check IP Header cksum */
     uint16_t original_chksum = received_ip_hdr->ip_sum;
     received_ip_hdr->ip_sum = 0;
@@ -152,7 +152,19 @@ void process_ip_packet(struct sr_instance *sr,
 
         /* Packet is not for this router and has valid TTL. Forward the packet. */
         fprintf(stderr, "Forwarding packet that was received on interface %s\n", interface);
-        struct sr_rt *next_hop_ip = calculate_longest_prefix(sr, received_ip_hdr->ip_dst);
+
+        struct sr_rt *routing_table_node = sr->routing_table, *best_match = NULL;
+	    while (routing_table_node) {
+	        if ((routing_table_node->dest.s_addr & routing_table_node->mask.s_addr) == (received_ip_hdr->ip_dst & routing_table_node->mask.s_addr)) {
+	            if (!best_match || (routing_table_node->mask.s_addr > best_match->mask.s_addr)) {
+	                best_match = routing_table_node;
+	            }
+	        }
+	        routing_table_node = routing_table_node->next;
+	    }
+
+        struct sr_rt *next_hop_ip = best_match;
+
         if (!next_hop_ip) { /* No match found in routing table */
             fprintf(stderr, "Sending ICMP3 since no match found in routing table\n");
             send_fabricated_icmp_packet(sr, packet, len, interface, 3, 0, NULL);
@@ -169,7 +181,7 @@ void process_ip_packet(struct sr_instance *sr,
             return;
         }
         fprintf(stderr, "Sending packet on interface %s to be sent to next hop since ARP cache entry was found\n", next_hop_ip->interface);
-        sr_ethernet_hdr_t *sending_eth_hdr = get_ethernet_header(packet);
+        sr_ethernet_hdr_t *sending_eth_hdr = (sr_ethernet_hdr_t *)packet;
 
         memcpy(sending_eth_hdr->ether_dhost, next_hop_mac->mac, sizeof(uint8_t) * ETHER_ADDR_LEN);
         memcpy(sending_eth_hdr->ether_shost, sr_get_interface(sr, next_hop_ip->interface)->addr, sizeof(uint8_t) * ETHER_ADDR_LEN);
@@ -190,11 +202,11 @@ void send_fabricated_icmp_packet(struct sr_instance *sr, uint8_t *packet, unsign
     uint8_t *icmp = (uint8_t *)malloc(sending_length);
     memset(icmp, 0, sizeof(uint8_t) * sending_length);
 
-    sr_ethernet_hdr_t *sending_eth_hdr = get_ethernet_header(icmp);
-    sr_icmp_hdr_t *send_icmp_header = get_icmp_header(icmp);
-    sr_ip_hdr_t *received_ip_hdr = get_ip_header(packet);
-    sr_ip_hdr_t *send_ip_header = get_ip_header(icmp);
-    sr_ethernet_hdr_t *given_eth_hdr = get_ethernet_header(packet);
+    sr_ethernet_hdr_t *sending_eth_hdr = (sr_ethernet_hdr_t *)icmp;
+    sr_icmp_hdr_t *send_icmp_header = (sr_icmp_hdr_t *)(icmp + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t));
+    sr_ip_hdr_t *received_ip_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+    sr_ip_hdr_t *send_ip_header = (sr_ip_hdr_t *)(icmp + sizeof(sr_ethernet_hdr_t));
+    sr_ethernet_hdr_t *given_eth_hdr = (sr_ethernet_hdr_t *)packet;
     struct sr_if *outgoing_interface = sr_get_interface(sr, got_on_intf);
 
     uint32_t src_ip = outgoing_interface->ip;
@@ -203,7 +215,7 @@ void send_fabricated_icmp_packet(struct sr_instance *sr, uint8_t *packet, unsign
     }
     
     if (0x00 == icmp_type)
-        memcpy(send_icmp_header, get_icmp_header(packet), sending_length - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+        memcpy(send_icmp_header, (sr_icmp_hdr_t *)(icmp + sizeof(sr_ip_hdr_t) + sizeof(sr_ethernet_hdr_t)), sending_length - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
     else
         memcpy(send_icmp_header->data, received_ip_hdr, ICMP_DATA_SIZE);
 
@@ -234,9 +246,9 @@ void process_arp_packet(struct sr_instance *sr, uint8_t *packet, unsigned int le
 
     struct sr_if *got_on_intf = sr_get_interface(sr, interface);
 
-    sr_ethernet_hdr_t *given_eth_hdr = get_ethernet_header(packet);
+    sr_ethernet_hdr_t *given_eth_hdr = (sr_ethernet_hdr_t *)packet;
 
-    sr_arp_hdr_t *given_arp_hdr = get_arp_header(packet);
+    sr_arp_hdr_t *given_arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
 
     if (arp_op_request == ntohs(given_arp_hdr->ar_op)) {
 
@@ -248,12 +260,12 @@ void process_arp_packet(struct sr_instance *sr, uint8_t *packet, unsigned int le
         uint8_t *arp_reply = (uint8_t *) malloc(len);
         memset(arp_reply, 0, len * sizeof(uint8_t));
 
-        sr_ethernet_hdr_t *reply_eth_hdr = get_ethernet_header(arp_reply);
+        sr_ethernet_hdr_t *reply_eth_hdr = (sr_ethernet_hdr_t *)arp_reply;
         memcpy(reply_eth_hdr->ether_dhost, given_eth_hdr->ether_shost, sizeof(uint8_t) * ETHER_ADDR_LEN);
         memcpy(reply_eth_hdr->ether_shost, got_on_intf->addr, sizeof(uint8_t) * ETHER_ADDR_LEN);
         reply_eth_hdr->ether_type = htons(ethertype_arp);
         
-        sr_arp_hdr_t *reply_arp_hdr = get_arp_header(arp_reply);
+        sr_arp_hdr_t *reply_arp_hdr = (sr_arp_hdr_t *)(arp_reply + sizeof(sr_ethernet_hdr_t));
         memcpy(reply_arp_hdr, given_arp_hdr, sizeof(sr_arp_hdr_t));
         reply_arp_hdr->ar_op = htons(arp_op_reply);
         memcpy(reply_arp_hdr->ar_sha, got_on_intf->addr, ETHER_ADDR_LEN);
@@ -276,7 +288,7 @@ void process_arp_packet(struct sr_instance *sr, uint8_t *packet, unsigned int le
             while (in_wait_queue_packet) {
                 uint8_t *send_packet = in_wait_queue_packet->buf;
 
-                sr_ethernet_hdr_t *sending_eth_hdr = get_ethernet_header(send_packet);
+                sr_ethernet_hdr_t *sending_eth_hdr = (sr_ethernet_hdr_t *)send_packet;
                 memcpy(sending_eth_hdr->ether_shost, got_on_intf->addr, ETHER_ADDR_LEN);
                 memcpy(sending_eth_hdr->ether_dhost, given_arp_hdr->ar_sha, ETHER_ADDR_LEN);
                 
@@ -301,18 +313,4 @@ struct sr_if *get_interface_from_ip(struct sr_instance *sr, uint32_t ip_address)
         intf = intf->next;
     }
     return dest_intf;
-}
-
-struct sr_rt *calculate_longest_prefix(struct sr_instance *sr, uint32_t destination_ip)
-{
-    struct sr_rt *routing_table_node = sr->routing_table, *best_match = NULL;
-    while (routing_table_node) {
-        if ((routing_table_node->dest.s_addr & routing_table_node->mask.s_addr) == (destination_ip & routing_table_node->mask.s_addr)) {
-            if (!best_match || (routing_table_node->mask.s_addr > best_match->mask.s_addr)) {
-                best_match = routing_table_node;
-            }
-        }
-        routing_table_node = routing_table_node->next;
-    }
-    return best_match;
 }
