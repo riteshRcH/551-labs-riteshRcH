@@ -19,7 +19,11 @@ for router in routers_config:
 	print("Configuring "+router+" interfaces....")
 
 	for interface in routers_config[router]:
-		vtysh_cmd = b" vtysh -c 'conf t\ninterface "+interface+"\nip address "+routers_config[router][interface][0]+"'"
+		if interface == "host":
+			vtysh_cmd = b" vtysh -c 'conf t\ninterface "+interface+"\nip address "+routers_config[router][interface]+"'"
+		else:
+			vtysh_cmd = b" vtysh -c 'conf t\ninterface "+interface+"\nip address "+routers_config[router][interface][0]+"\nip ospf cost "+routers_config[router][interface][1]+"'"
+		
 		sys.stdout.write(vtysh_cmd+" ==> exit code ")
 
 		p = Popen(['./go_to.sh', router], stdout=PIPE, stdin=PIPE, stderr=STDOUT)
@@ -41,19 +45,3 @@ for router in routers_config:
 	print(p.returncode)
 
 	print	
-
-print("########################################################################################################")
-
-for router in routers_config:
-	print("Configuring ospf link weight on "+router+"....")
-
-	for interface in routers_config[router]:
-		if interface != "host":
-			vtysh_cmd = b" vtysh -c 'conf t\ninterface "+interface+"\nip ospf cost "+routers_config[router][interface][1]+"'"
-			sys.stdout.write(vtysh_cmd+" ==> exit code ")
-
-			p = Popen(['./go_to.sh', router], stdout=PIPE, stdin=PIPE, stderr=STDOUT)
-			p.communicate(input=vtysh_cmd)[0]
-			print(p.returncode)
-
-		print
