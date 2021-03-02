@@ -75,11 +75,11 @@ for router in routers_config:
 
 	if router in ibgp_peers:
 		if router == "NEWY":
-			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+'\n'+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]], ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["east"]+" remote-as "+asns["east"]+"'"
+			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["east"]+" remote-as "+asns["east"]+"'"
 		elif router == "SEAT":
-			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+'\n'+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]], ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["west"]+" remote-as "+asns["west"]+"'"
+			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["west"]+" remote-as "+asns["west"]+"'"
 		else:
-			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+'\n'+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]], ibgp_peers-{router})))+"'"
+			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"'"
 	elif router == "east":
 		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses["NEWY"]+" remote-as "+asns[router_asn_belongings["NEWY"]]+"'"
 	elif router == "west":
