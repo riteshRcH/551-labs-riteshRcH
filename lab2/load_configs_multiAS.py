@@ -83,7 +83,7 @@ for router in routers_config:
 	elif router == "east":
 		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor 6.0.1.1 remote-as "+asns[router_asn_belongings["NEWY"]]+"\nnetwork 6.0.0.0/22\nip route 4.0.0.0/8 6.0.1.1'"
 	elif router == "west":
-		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor 5.0.1.1 remote-as "+asns[router_asn_belongings["SEAT"]]+"\nnetwork 5.0.0.0/15\nip route 4.0.0.0/8 5.0.1.1\nip route 5.1.1.0/24 5.0.2.1'"
+		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor 5.0.1.1 remote-as "+asns[router_asn_belongings["SEAT"]]+"\nnetwork 5.0.0.0/15\nip route 4.0.0.0/8 5.0.1.1\nip route 5.1.1.0/24 5.0.2.2'"
 	sys.stdout.write(vtysh_cmd+" ==> exit code ")
 
 	p = Popen(['./go_to.sh', router], stdout=PIPE, stdin=PIPE, stderr=STDOUT)
