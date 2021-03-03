@@ -75,15 +75,15 @@ for router in routers_config:
 
 	if router in ibgp_peers:
 		if router == "NEWY":
-			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["east"]+" remote-as "+asns["east"]+"'"
+			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["east"]+" remote-as "+asns["east"]+"\nnetwork 4.0.0.0/8'"
 		elif router == "SEAT":
-			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["west"]+" remote-as "+asns["west"]+"'"
+			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"\nneighbor "+bgp_loopback_addresses["west"]+" remote-as "+asns["west"]+"\nnetwork 4.0.0.0/8'"
 		else:
 			vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nbgp router-id "+bgp_loopback_addresses[router]+"\nneighbor name peer-group\n"+'\n'.join(list(map(lambda x:"neighbor "+bgp_loopback_addresses[x]+" remote-as "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses[x]+" update-source "+bgp_loopback_addresses[router]+"\nneighbor "+bgp_loopback_addresses[x]+" next-hop-self", ibgp_peers-{router})))+"'"
 	elif router == "east":
-		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses["NEWY"]+" remote-as "+asns[router_asn_belongings["NEWY"]]+"'"
+		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor 6.0.1.1 remote-as "+asns[router_asn_belongings["NEWY"]]+"\nnetwork 6.0.0.0/22\nip route 4.0.0.0/8 6.0.1.1'"
 	elif router == "west":
-		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor "+bgp_loopback_addresses["SEAT"]+" remote-as "+asns[router_asn_belongings["SEAT"]]+"'"
+		vtysh_cmd = b" vtysh -c 'conf t\nrouter bgp "+asns[router_asn_belongings[router]]+"\nneighbor 5.0.1.1 remote-as "+asns[router_asn_belongings["SEAT"]]+"\nnetwork 5.0.0.0/15\nip route 4.0.0.0/8 5.0.1.1\nip route 5.1.1.0/24 5.0.2.1'"
 	sys.stdout.write(vtysh_cmd+" ==> exit code ")
 
 	p = Popen(['./go_to.sh', router], stdout=PIPE, stdin=PIPE, stderr=STDOUT)
