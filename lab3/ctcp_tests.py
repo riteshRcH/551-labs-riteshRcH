@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -20,7 +21,7 @@ SERVER_PORT = str(52365)
 REF_PORT = str(39184)
 
 # Number of seconds to wait before timing out a read from STDERR or STDOUT.
-TEST_TIMEOUT = 3
+TEST_TIMEOUT = 5
 
 CTCP_HEADER_LEN = 20
 MAX_SEG_DATA_SIZE = 1440
@@ -140,6 +141,14 @@ class timeout:
 
   def __exit__(self, type, value, traceback):
     signal.alarm(0)
+
+
+def pick_random_ports(min_port=1025, max_port=65535):
+    server_port = random.randint(min_port, max_port)
+    client_port = server_port
+    while server_port == client_port:
+        client_port = random.randint(min_port, max_port)
+    return str(client_port), str(server_port)
 
 
 def start_server(port=SERVER_PORT, flags=[], reference=False):
@@ -297,8 +306,9 @@ def client_sends():
   data (by checking segment length).
   """
   test_str = "t35t1nG cl13nT 53nd1nG\n"
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   write_to(client, test_str)
   segments = read_segments_from(client)
@@ -309,7 +319,7 @@ def client_sends():
   # correct length.
   segment = segments[0]
   return (
-    str(segment.source_port) == CLIENT_PORT and
+    str(segment.source_port) == client_port and
     segment.length == CTCP_HEADER_LEN + len(test_str)
   )
 
@@ -321,8 +331,9 @@ def client_receives():
   and contains data (by checking segment length).
   """
   test_str = "t35t1nG cl13nT r3c31\/1NG\n"
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   write_to(client, test_str)
   segments = read_segments_from(server)
@@ -333,7 +344,7 @@ def client_receives():
   # the correct length.
   segment = segments[0]
   return (
-    str(segment.dest_port) == SERVER_PORT and
+    str(segment.dest_port) == server_port and
     segment.length == CTCP_HEADER_LEN + len(test_str)
   )
 
@@ -346,8 +357,9 @@ def correct_checksum():
   test_strs = ["ch3ck1nG c0rr3ct ch3cksu|\/|\n", "y3T an0th3r str1ng0_x\/.!&\n"]
 
   def test_checksum(test_str):
-    server = start_server()
-    client = start_client()
+    client_port, server_port = pick_random_ports()
+    server = start_server(port=server_port)
+    client = start_client(server_port=server_port, port=client_port)
 
     write_to(client, test_str)
     segments = read_segments_from(client)
@@ -356,8 +368,10 @@ def correct_checksum():
     teardown()
 
     # Start reference solution to get answers.
-    ref_server = start_server(port=REF_PORT, reference=True)
-    ref_client = start_client(server_port=REF_PORT, reference=True)
+    ref_client_port, ref_server_port = pick_random_ports()
+    ref_server = start_server(port=ref_server_port, reference=True)
+    ref_client = start_client(server_port=ref_server_port,
+                              port=ref_client_port, reference=True)
 
     # Get reference checksum.
     write_to(ref_client, test_str)
@@ -384,8 +398,9 @@ def correct_header_fields():
   set correctly.
   """
   test_str = "c0rrect_!!heAd3R fi3ld5__%%!!     @\n"
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   write_to(client, test_str)
   segments = read_segments_from(client)
@@ -394,8 +409,10 @@ def correct_header_fields():
   teardown()
 
   # Start reference solution to get answers.
-  ref_server = start_server(port=REF_PORT, reference=True)
-  ref_client = start_client(server_port=REF_PORT, reference=True)
+  ref_client_port, ref_server_port = pick_random_ports()
+  ref_server = start_server(port=ref_server_port, reference=True)
+  ref_client = start_client(server_port=ref_server_port, 
+                            port=ref_client_port, reference=True)
 
   # Get reference checksum.
   write_to(ref_client, test_str)
@@ -427,8 +444,9 @@ def bidirectional():
   """
   test_str_send = "5tr1NG 53nT 295 !_ __ %#^^^ .\n"
   test_str_recv = "5tr1NG r3c31v3D 224@ &&&~~~~`\n"
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   write_to(client, test_str_send)
   write_to(server, test_str_recv)
@@ -456,9 +474,9 @@ def large_data():
   Sends data twice + 1 the window size. It should all be received properly.
   """
   test_str = make_random(MAX_SEG_DATA_SIZE * 2 + 1)
-  server = start_server()
-  client = start_client()
-
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
   write_to(client, test_str)
   time.sleep(TEST_TIMEOUT)
   result = read_from(server)
@@ -470,8 +488,10 @@ def unreliability(flag):
   Sends segments unreliably from the client to the server.
   """
   test_str = "unr3l14b13 p4ck3t!!!!!      !!!~\n"
-  server = start_server()
-  client = start_client(flags=[flag, "100"])
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port,
+                        flags=[flag, "100"])
 
   write_to(client, test_str)
   time.sleep(TEST_TIMEOUT)
@@ -498,8 +518,10 @@ def segment_truncated():
   """
   test_str = "n0t trunc4t3d 139482793 912847 192874 1928\n"
   truncated_str = DEBUG_TRUNCATE + "trunc4t3d 139482793 912847 192874 1928\n"
-  server = start_server()
-  client = start_client(reference=True)
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port,
+                        reference=True)
 
   # Send full segment.
   write_to(client, test_str)
@@ -521,8 +543,9 @@ def fin_sent():
   Checks to see that a FIN segment is sent when an EOF is read from STDIN.
   """
   test_str = "f1N s3nt\n"
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   # First write some data.
   write_to(client, test_str)
@@ -546,8 +569,9 @@ def connection_teardown():
   Makes sure connection teardown occurs when both sides send a FIN.
   """
   test_str = make_random(100)
-  server = start_server()
-  client = start_client()
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port)
+  client = start_client(server_port=server_port, port=client_port)
 
   # First write some data at both ends.
   write_to(client, test_str)
@@ -579,8 +603,11 @@ def larger_windows():
 
   stop_str = DEBUG_STOP + "1t'5 h4mm3r t1m3!!!!!!!!\n"
   large_strs = [make_random(596) for _ in range(20)]
-  server = start_server(reference=True, flags=["-w", str(4)])
-  client = start_client(flags=["-w", str(4)])
+  client_port, server_port = pick_random_ports()
+  server = start_server(port=server_port, reference=True, flags=["-w", str(4)])
+  client = start_client(server_port=server_port, port=client_port,
+                        flags=["-w", str(4)])
+
 
   # Stop the server from processing anything.
   write_to(client, large_strs[0])
@@ -601,7 +628,7 @@ def larger_windows():
     return False
 
   # Look only at segments sent by client.
-  segments = [s for s in segments if s.source_port == int(CLIENT_PORT)]
+  segments = [s for s in segments if s.source_port == int(client_port)]
   if len(segments) == 0:
     return False
 
