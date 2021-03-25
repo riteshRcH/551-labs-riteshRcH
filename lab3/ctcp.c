@@ -74,7 +74,7 @@ void ctcp_send(ctcp_state_t *state);
 
 void ctcp_send_segment(ctcp_state_t *state, wrapped_ctcp_segment_t* wrapped_segment);
 
-void ctcp_send_control_segment(ctcp_state_t *state);
+void ctcp_send_info_segment(ctcp_state_t *state);
 
 ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 {
@@ -260,7 +260,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     if ((most_recent_seg_sequence_number > largest_valid_sequence_number) || (ntohl(segment->seqno) < smallest_valid_sequence_number))
     {
       free(segment);
-      ctcp_send_control_segment(state);
+      ctcp_send_info_segment(state);
       return;
     }
   }
@@ -398,10 +398,10 @@ void ctcp_output(ctcp_state_t *state)
   }
 
   if (num_segments_output)
-    ctcp_send_control_segment(state);
+    ctcp_send_info_segment(state);
 }
 
-void ctcp_send_control_segment(ctcp_state_t *state)
+void ctcp_send_info_segment(ctcp_state_t *state)
 {
   ctcp_segment_t ctcp_seg;
   ctcp_seg.ackno = htonl(state->rx_state.sequence_number_last_accepted + 1), ctcp_seg.seqno = htonl(0), ctcp_seg.len   = sizeof(ctcp_segment_t), ctcp_seg.flags = TH_ACK;
