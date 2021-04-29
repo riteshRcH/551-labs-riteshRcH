@@ -11,6 +11,7 @@
 #define CTCP_H
 
 #include "ctcp_sys.h"
+#include "ctcp_bbr.h"
 
 /**
  * Maximum segment data size.
@@ -181,4 +182,6 @@ void ctcp_output(ctcp_state_t *state);
  */
 void ctcp_timer();
 
+
+void send_segment(ctcp_state_t *state, char *data, int data_size, int flags, int req_ack);
 #endif /* CTCP_H */

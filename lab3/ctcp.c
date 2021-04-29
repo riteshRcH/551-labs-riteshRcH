@@ -11,31 +11,10 @@
  *
  *****************************************************************************/
 
+#include "ctcp_sys.h"
 #include "ctcp.h"
 #include "ctcp_linked_list.h"
-#include "ctcp_sys.h"
 #include "ctcp_utils.h"
-
-typedef struct {
-  uint32_t sequence_number_last_accepted;
-  bool got_fin_flag_set_segment;
-  linked_list_t* output_pending_segments;
-} receiver_state_t;
-
-typedef struct {
-  uint32_t most_recent_received_acknowledgement;
-  bool got_ctrl_d;
-  uint32_t most_recent_sequence_number;
-  uint32_t most_recent_sequence_number_sent;
-  linked_list_t* wrapped_unacknowledged_segs;
-} sender_state_t;
-
-typedef struct {
-  uint32_t         retransmit_counter;
-  long             last_send_time;
-  ctcp_segment_t   ctcp_segment;
-} wrapped_ctcp_segment_t;
-
 /**
  * Connection state.
  *
@@ -57,11 +36,37 @@ struct ctcp_state {
                                stop-and-wait protocol and therefore does not
                                necessarily need a linked list. You may remove
                                this if this is the case for you */
-  long FIN_WAIT_start_time;
 
-  ctcp_config_t ctcp_config;
-  sender_state_t tx_state;
-  receiver_state_t rx_state;
+  
+  struct bbr *bbr;
+
+  ctcp_config_t *ctcp_config; 
+  FILE *bdp_file_pointer; 
+
+  uint32_t most_recent_sequence_number; 
+  uint32_t sequence_number_last_accepted; 
+
+  uint32_t most_recent_received_acknowledgement; 
+  uint32_t second_most_recent_acknowledgement; 
+
+  uint16_t send_window; 
+  uint16_t recv_window; 
+  uint16_t sliding_window_size_bytes; 
+
+  unsigned int connection_state; 
+
+  unsigned int last_ctcp_timer_call; 
+
+  long last_send_time; 
+
+  long minimum_rtt_captured; 
+  unsigned int maximum_bandwidth_captured; 
+
+  unsigned int inflight_data; 
+  unsigned int app_limited_until; 
+
+  linked_list_t *unacknowledged_segments; 
+  linked_list_t *output_pending_segments; 
 };
 
 /**
@@ -70,13 +75,8 @@ struct ctcp_state {
  */
 static ctcp_state_t *state_list;
 
-void ctcp_send(ctcp_state_t *state);
 
-void ctcp_send_segment(ctcp_state_t *state, wrapped_ctcp_segment_t* wrapped_segment);
-
-void ctcp_send_info_segment(ctcp_state_t *state);
-
-ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
+ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *ctcp_config)
 {
   /* Connection could not be established. */
   if (conn == NULL) {
@@ -85,22 +85,26 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 
   /* Established a connection. Create a new state and update the linked list
      of connection states. */
-  ctcp_state_t *state = calloc(sizeof(ctcp_state_t), 1);
+  struct ctcp_state *state = calloc(sizeof(ctcp_state_t), 1);
   state->next = state_list;
   state->prev = &state_list;
   if (state_list)
     state_list->prev = &state->next;
   state_list = state;
+  
+  state->conn = conn, state->ctcp_config = ctcp_config;
+  state->most_recent_sequence_number = 1, state->most_recent_received_acknowledgement = 1, state->second_most_recent_acknowledgement = 1, state->sequence_number_last_accepted = 1;
+  state->recv_window = ctcp_config->recv_window, state->send_window = ctcp_config->send_window;
+  state->unacknowledged_segments = ll_create(), state->output_pending_segments = ll_create();
+  state->connection_state = 0, state->sliding_window_size_bytes = 0, state->app_limited_until=0, state->last_send_time =0, state->inflight_data = 0, state->last_ctcp_timer_call =0;
+  state->minimum_rtt_captured =-1, state->maximum_bandwidth_captured = -1;
+  
+  state->bdp_file_pointer  = fopen("bdp.txt","w");
+  state->bbr = bbr_init_state();
+  state->bbr->cwnd = state->send_window;
+  state->bbr->currently_executing_mode = STARTUP;
 
-  /* Set fields. */
-  state->conn = conn;
-  state->FIN_WAIT_start_time = 0;
-
-  state->ctcp_config.recv_window = cfg->recv_window, state->ctcp_config.send_window = cfg->send_window, state->ctcp_config.timer = cfg->timer, state->ctcp_config.rt_timeout = cfg->rt_timeout;
-  state->tx_state.most_recent_received_acknowledgement = 0, state->tx_state.got_ctrl_d = false, state->tx_state.most_recent_sequence_number = 0, state->tx_state.most_recent_sequence_number_sent = 0, state->tx_state.wrapped_unacknowledged_segs = ll_create();
-  state->rx_state.sequence_number_last_accepted = 0, state->rx_state.got_fin_flag_set_segment = false, state->rx_state.output_pending_segments = ll_create();
-
-  free(cfg);
+  //free(ctcp_config);
   return state;
 }
 
@@ -113,322 +117,392 @@ void ctcp_destroy(ctcp_state_t *state)
     *state->prev = state->next;
     conn_remove(state->conn);
 
-    for (i = 0; i < ll_length(state->tx_state.wrapped_unacknowledged_segs); i++)
+    for(i = 0; i < ll_length(state->unacknowledged_segments); i++)
     {
-      ll_node_t *head = ll_front(state->tx_state.wrapped_unacknowledged_segs);
-      free(head->object);
-      ll_remove(state->tx_state.wrapped_unacknowledged_segs, head);
+      ll_node_t *curr_node = ll_front(state->unacknowledged_segments);
+      free(curr_node->object);
+      ll_remove(state->unacknowledged_segments, curr_node);
     }
-    ll_destroy(state->tx_state.wrapped_unacknowledged_segs);
+    ll_destroy(state->unacknowledged_segments);
 
-    for (i = 0; i < ll_length(state->rx_state.output_pending_segments); ++i)
+    for(i = 0; i < ll_length(state->output_pending_segments); i++)
     {
-      ll_node_t *head = ll_front(state->rx_state.output_pending_segments);
-      free(head->object);
-      ll_remove(state->rx_state.output_pending_segments, head);
+      ll_node_t *curr_node = ll_front(state->output_pending_segments);
+      free(curr_node->object);
+      ll_remove(state->output_pending_segments, curr_node);
     }
-    ll_destroy(state->rx_state.output_pending_segments);
+    ll_destroy(state->output_pending_segments);
 
     free(state);
   }
   end_client();
 }
 
-void ctcp_read(ctcp_state_t *state)
+void send_segment(ctcp_state_t *state,char *data,int data_size,int flags,int req_ack)
 {
-  uint8_t buf[MAX_SEG_DATA_SIZE];
-  int read_bytes_cnt;
-  wrapped_ctcp_segment_t* new_seg_pointer;
-
-  if (state->tx_state.got_ctrl_d)
-    return;
-
-  while ((read_bytes_cnt = conn_input(state->conn, buf, MAX_SEG_DATA_SIZE)) > 0)
+  ctcp_segment_t *send_segment = (ctcp_segment_t*)calloc(sizeof(ctcp_segment_t) + data_size,1);
+  int send_segment_size = sizeof(ctcp_segment_t) + data_size;
+  memcpy(send_segment->data,data,data_size);
+  if(flags!=-1)
+    send_segment->flags = flags;
+  
+  send_segment->seqno = htonl(state->most_recent_sequence_number);
+  send_segment->ackno = htonl(state->most_recent_received_acknowledgement);
+  send_segment->len = htons(send_segment_size);
+  send_segment->window= htons(state->send_window);
+  send_segment->cksum = 0;
+  send_segment->cksum = cksum(send_segment,send_segment_size);
+  if(req_ack == 1)
   {
-    new_seg_pointer = (wrapped_ctcp_segment_t*) calloc(1, sizeof(wrapped_ctcp_segment_t) + read_bytes_cnt);
-    new_seg_pointer->ctcp_segment.len = htons((uint16_t) sizeof(ctcp_segment_t) + read_bytes_cnt), new_seg_pointer->ctcp_segment.seqno = htonl(state->tx_state.most_recent_sequence_number + 1);
-    memcpy(new_seg_pointer->ctcp_segment.data, buf, read_bytes_cnt);
-    state->tx_state.most_recent_sequence_number += read_bytes_cnt;
-    ll_add(state->tx_state.wrapped_unacknowledged_segs, new_seg_pointer);
-  }
-
-  if (read_bytes_cnt == -1)
-  {
-    state->tx_state.got_ctrl_d = true;
-    new_seg_pointer = (wrapped_ctcp_segment_t*) calloc(1, sizeof(wrapped_ctcp_segment_t));
-    new_seg_pointer->ctcp_segment.len = htons((uint16_t) sizeof(ctcp_segment_t)), new_seg_pointer->ctcp_segment.seqno = htonl(state->tx_state.most_recent_sequence_number + 1), new_seg_pointer->ctcp_segment.flags |= TH_FIN;
-    ll_add(state->tx_state.wrapped_unacknowledged_segs, new_seg_pointer);
-  }
-
-  ctcp_send(state_list);
-}
-
-void ctcp_send(ctcp_state_t *state)
-{
-  wrapped_ctcp_segment_t *pointer_to_wrapped_ctcp_seg;
-  ll_node_t *current_node;
-  unsigned int i, length;
-  uint32_t most_recent_seg_sequence_number, max_valid_sequence_number;
-
-  if (state == NULL)
-    return;
-
-  length = ll_length(state->tx_state.wrapped_unacknowledged_segs);
-  if (length == 0)
-    return;
-
-  for (i = 0; i < length; ++i)
-  {
-    if (i == 0) current_node = ll_front(state->tx_state.wrapped_unacknowledged_segs);
-    else current_node = current_node->next;
-
-    pointer_to_wrapped_ctcp_seg = (wrapped_ctcp_segment_t *) current_node->object, most_recent_seg_sequence_number = ntohl(pointer_to_wrapped_ctcp_seg->ctcp_segment.seqno) + (ntohs(((ctcp_segment_t *) (&pointer_to_wrapped_ctcp_seg->ctcp_segment))->len) - sizeof(ctcp_segment_t)) - 1, max_valid_sequence_number = state->tx_state.most_recent_received_acknowledgement - 1 + state->ctcp_config.send_window;
-
-    if (state->tx_state.most_recent_received_acknowledgement == 0)
-      max_valid_sequence_number++;
-
-    if (most_recent_seg_sequence_number > max_valid_sequence_number)
-      return;
-
-    if (pointer_to_wrapped_ctcp_seg->retransmit_counter == 0)
-      ctcp_send_segment(state, pointer_to_wrapped_ctcp_seg);
-    else if (i == 0)
-    {
-      if ((current_time() - pointer_to_wrapped_ctcp_seg->last_send_time) > state->ctcp_config.rt_timeout)
-        ctcp_send_segment(state, pointer_to_wrapped_ctcp_seg);
-    }
-  }
-}
-
-void ctcp_send_segment(ctcp_state_t *state, wrapped_ctcp_segment_t* wrapped_segment)
-{
-  uint16_t seg_checksum;
-  int sent_bytes_count;
-
-  if (wrapped_segment->retransmit_counter >= 6)
-  {
-    ctcp_destroy(state);
-    return;
-  }
-
-  wrapped_segment->ctcp_segment.ackno = htonl(state->rx_state.sequence_number_last_accepted + 1), wrapped_segment->ctcp_segment.flags |= TH_ACK, wrapped_segment->ctcp_segment.window = htons(state->ctcp_config.recv_window), wrapped_segment->ctcp_segment.cksum = 0, seg_checksum = cksum(&wrapped_segment->ctcp_segment, ntohs(wrapped_segment->ctcp_segment.len)), wrapped_segment->ctcp_segment.cksum = seg_checksum;
-
-  sent_bytes_count = conn_send(state->conn, &wrapped_segment->ctcp_segment, ntohs(wrapped_segment->ctcp_segment.len));
-  wrapped_segment->retransmit_counter++;
-
-  if (sent_bytes_count < ntohs(wrapped_segment->ctcp_segment.len))
-    return;
-
-  if (sent_bytes_count == -1)
-  {
-    ctcp_destroy(state);
-    return;
-  }
-
-  state->tx_state.most_recent_sequence_number_sent += sent_bytes_count, wrapped_segment->last_send_time = current_time();
-}
-
-
-void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
-{
-  uint16_t calculated_checksum, got_checksum, data_byte_count;
-  uint32_t most_recent_seg_sequence_number, largest_valid_sequence_number, smallest_valid_sequence_number;
-  unsigned int length, i;
-  ll_node_t* ptr;
-  ctcp_segment_t* seg_pointer;
-
-  if (len < ntohs(segment->len))
-  {
-    free(segment);
-    return;
-  }
-
-  got_checksum = segment->cksum, segment->cksum = 0, calculated_checksum = cksum(segment, ntohs(segment->len)), segment->cksum = got_checksum;
-  if (got_checksum != calculated_checksum)
-  {
-    free(segment);
-    return;
-  }
-
-  data_byte_count = ntohs(segment->len) - sizeof(ctcp_segment_t);
-
-  if (data_byte_count)
-  {
-    most_recent_seg_sequence_number = ntohl(segment->seqno) + data_byte_count - 1, smallest_valid_sequence_number = state->rx_state.sequence_number_last_accepted + 1, largest_valid_sequence_number = state->rx_state.sequence_number_last_accepted
-      + state->ctcp_config.recv_window;
-
-    if ((most_recent_seg_sequence_number > largest_valid_sequence_number) || (ntohl(segment->seqno) < smallest_valid_sequence_number))
-    {
-      free(segment);
-      ctcp_send_info_segment(state);
-      return;
-    }
-  }
-
-  if (segment->flags & TH_ACK)
-    state->tx_state.most_recent_received_acknowledgement = ntohl(segment->ackno);
-
-
-  if (data_byte_count || (segment->flags & TH_FIN))
-  {
-    length = ll_length(state->rx_state.output_pending_segments);
-
-    if (length == 0)
-      ll_add(state->rx_state.output_pending_segments, segment);
-    else if (length == 1)
-    {
-      ptr = ll_front(state->rx_state.output_pending_segments);
-      seg_pointer = (ctcp_segment_t*) ptr->object;
-      if (ntohl(segment->seqno) == ntohl(seg_pointer->seqno)) free(segment);
-      else if (ntohl(segment->seqno) > ntohl(seg_pointer->seqno)) ll_add(state->rx_state.output_pending_segments, segment);
-      else ll_add_front(state->rx_state.output_pending_segments, segment);
-    }
-    else
-    {
-      ctcp_segment_t* head_seg_pointer;
-      ctcp_segment_t* tail_seg_pointer;
-      ll_node_t* head_node_pointer;
-      ll_node_t* tail_node_pointer;
-
-      head_node_pointer = ll_front(state->rx_state.output_pending_segments), tail_node_pointer  = ll_back(state->rx_state.output_pending_segments), head_seg_pointer = (ctcp_segment_t*) head_node_pointer->object, tail_seg_pointer  = (ctcp_segment_t*) tail_node_pointer->object;
-
-      if (ntohl(segment->seqno) > ntohl(tail_seg_pointer->seqno)) ll_add(state->rx_state.output_pending_segments, segment);
-      else if (ntohl(segment->seqno) < ntohl(head_seg_pointer->seqno)) ll_add_front(state->rx_state.output_pending_segments, segment);
-      else
+    void **arr = malloc(5 * sizeof(void *));
+    arr[0] = malloc(sizeof(ctcp_segment_t*));
+    arr[1] = malloc(sizeof(long));
+    arr[2] = malloc(sizeof(int));
+    arr[3] = malloc(sizeof(int));
+    arr[4] = malloc(sizeof(int));
+    arr[0] = send_segment;
+    *((int *)(arr[2])) = 0;
+    *((int *)(arr[3])) = 0;
+    *((int *)(arr[4])) = 0;
+    
+    ll_add(state->output_pending_segments,arr);
+    state->most_recent_sequence_number = state->most_recent_sequence_number + data_size;
+ 
+    if(ll_length(state->output_pending_segments)>0)
+    {   
+      while((state->sliding_window_size_bytes < state->send_window) &&(ll_length(state->output_pending_segments)>0))
       {
-        for (i = 0; i < (length-1); ++i)
+        ll_add(state->unacknowledged_segments,ll_front(state->output_pending_segments)->object);
+        void **buf = (ll_front(state->output_pending_segments)->object);
+        ctcp_segment_t *seg = (ctcp_segment_t*)buf[0];
+        state->sliding_window_size_bytes = state->sliding_window_size_bytes + ntohs(seg->len);
+        ll_remove(state->output_pending_segments,ll_front(state->output_pending_segments));
+      }
+    }
+    int can_send_how_much = state->sliding_window_size_bytes - state->inflight_data;
+    int bdp = (state->bbr->rt_prop)* state->bbr->bottleneck_bandwidth * 2.89;
+    ll_node_t *current_node;
+    
+    if(state->inflight_data >= bdp && bdp!=0)
+      return;
+    
+    if((ll_length(state->output_pending_segments)== 0) && (can_send_how_much ==0))
+    {
+      state->app_limited_until = state->inflight_data;
+      return;
+    }
+    
+    for(current_node = state->unacknowledged_segments->head; current_node!=NULL; current_node = current_node->next)
+    {
+      void **buf = current_node->object;
+      ctcp_segment_t *segment = (ctcp_segment_t*)buf[0];
+      if(*((int *)(buf[2])) == 0)
+      {
+        *((long *)(buf[1])) = state->last_send_time = current_time();
+        if(state->app_limited_until >0)
+          *((int *)(buf[4])) = 1;
+        usleep(2000);
+        while(1)
         {
-          ll_node_t* current_node;
-          ll_node_t* next_node_ptr;
-          ctcp_segment_t* curr_ctcp_segment_ptr;
-          ctcp_segment_t* next_ctcp_segment_ptr;
-
-          if (i == 0) current_node = ll_front(state->rx_state.output_pending_segments);
-          else current_node = current_node->next;
-          next_node_ptr = current_node->next, curr_ctcp_segment_ptr = (ctcp_segment_t*) current_node->object, next_ctcp_segment_ptr = (ctcp_segment_t*) next_node_ptr->object;
-
-          if ((ntohl(segment->seqno) == ntohl(curr_ctcp_segment_ptr->seqno)) || (ntohl(segment->seqno) == ntohl(next_ctcp_segment_ptr->seqno)))
+          if(current_time() >= state->bbr->transmit_time_for_next_packet)
           {
-            free(segment);
+            state->bbr->data_in_probe_bw_mode += ntohs(segment->len);
+            conn_send(state->conn,segment,ntohs(segment->len));
             break;
-          }else
-          {
-            if ((ntohl(segment->seqno) > ntohl(curr_ctcp_segment_ptr->seqno)) && (ntohl(segment->seqno) < ntohl(next_ctcp_segment_ptr->seqno)))
-            {
-              ll_add_after(state->rx_state.output_pending_segments, current_node, segment);
-              break;
-            }
           }
         }
+        *((int *)(buf[2])) = 1;
+        
+        state->inflight_data += ntohs(segment->len);
+        if ((state->maximum_bandwidth_captured != -1) && (state->maximum_bandwidth_captured !=0))
+          state->bbr->transmit_time_for_next_packet = current_time() + ntohs(segment->len) /(state->bbr->pacing_gain  * state->bbr->bottleneck_bandwidth);
+        else
+          state->bbr->transmit_time_for_next_packet = 0;
       }
     }
   }
   else
-    free(segment);
-
-  ctcp_output(state);
-
-  ll_node_t* head;
-  wrapped_ctcp_segment_t* pointer_to_wrapped_ctcp_seg;
-  uint32_t last_byte_sequence_number;
-  uint16_t data_bytes_count;
-
-  while (ll_length(state->tx_state.wrapped_unacknowledged_segs) != 0)
   {
-    head = ll_front(state->tx_state.wrapped_unacknowledged_segs), pointer_to_wrapped_ctcp_seg = (wrapped_ctcp_segment_t*) head->object, data_bytes_count = ntohs(pointer_to_wrapped_ctcp_seg->ctcp_segment.len) - sizeof(ctcp_segment_t), last_byte_sequence_number = ntohl(pointer_to_wrapped_ctcp_seg->ctcp_segment.seqno) + data_bytes_count - 1;
+    usleep(2500);
+    
+    conn_send(state->conn,send_segment,send_segment_size);
+    state->most_recent_sequence_number = state->most_recent_sequence_number + data_size;
+    free(send_segment);
+    free(data);   
+  }  
+}
 
-    if (last_byte_sequence_number < state->tx_state.most_recent_received_acknowledgement)
+void ctcp_read(ctcp_state_t *state)
+{  
+  char stdin_data[MAX_SEG_DATA_SIZE];
+  int stdin_read_size;
+  int i;
+  while(1)
+  {   
+    stdin_read_size = conn_input(state->conn,stdin_data,MAX_SEG_DATA_SIZE); 
+    if(stdin_read_size > state->send_window)
     {
-      free(pointer_to_wrapped_ctcp_seg);
-      ll_remove(state->tx_state.wrapped_unacknowledged_segs, head);
-    }else
+      for(i=0;i<stdin_read_size;i += state->send_window)
+        send_segment(state,stdin_data+i,state->send_window,TH_ACK,1);           
+    }
+    
+    if ((stdin_read_size == -1))
+    {
+      if(ll_length(state->output_pending_segments)!=0)
+        return;
+      if(state->connection_state ==0)
+        send_segment(state,NULL,0,TH_FIN,0);
+      else
+      {
+        send_segment(state,NULL,0,TH_FIN,0);
+        ctcp_destroy(state);
+      }
       return;
+    }
+    
+    if(stdin_read_size == 0)
+      break;
+    send_segment(state,stdin_data,stdin_read_size,TH_ACK,1);
   }
+  return;
+}
+
+void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
+{
+  int dup_flag =0;
+  segment->cksum =0;
+    
+  if(((segment->flags & TH_FIN) == TH_FIN) &&(state->connection_state ==0))
+  {
+    state->connection_state = 1;
+    send_segment(state,NULL,0,TH_ACK,0);
+    conn_output(state->conn,segment->data,0);
+    return;
+  }
+  else if(state->connection_state == 1)
+  {
+    ctcp_destroy(state);
+    return;
+  }
+  
+  if((segment->flags & TH_ACK) == TH_ACK)
+  {
+    if(state->connection_state == 1)
+      ctcp_destroy(state);
+
+    while(ll_length(state->unacknowledged_segments)>0)
+    {
+      ll_node_t *seg_node = ll_front(state->unacknowledged_segments);
+      void **buf = (seg_node->object);
+      ctcp_segment_t *seg = (ctcp_segment_t*)buf[0];     
+      if(ntohl(seg->seqno) < ntohl(segment->ackno))
+      {
+        long rtt = current_time() - *((long*)buf[1]); 
+        if(state->minimum_rtt_captured ==-1)
+        {
+          state->minimum_rtt_captured = rtt;
+          state->bbr->rt_prop = rtt;
+        }
+        else
+        {
+          
+          if(rtt <= state->minimum_rtt_captured)
+          {
+            state->minimum_rtt_captured = rtt;
+            
+            if(state->bbr->currently_executing_mode == PROBE_BW)
+              state->bbr->currently_executing_mode = STARTUP;
+          }
+        }
+        if(state->bbr->rtts_happened == 0)
+        {
+          state->bbr->rtts_happened++;
+          state->maximum_bandwidth_captured = state->bbr->bottleneck_bandwidth = rtt ? ((float)((float)ntohs(seg->len)/(float)rtt)) : 0.0;
+        }
+        else
+        {
+          if(*((long*)buf[4]) ==0)
+          {
+            static int cnt;
+            cnt++;
+            if(cnt == 1)
+              fprintf(state->bdp_file_pointer,"%ld,%d\n",current_time(),0);
+            state->bbr->rtts_happened++;
+            float bw = rtt ? ((float)((float)ntohs(seg->len)/(float)rtt)) : 0.0;
+            
+            fprintf(state->bdp_file_pointer,"%ld,%lld\n",current_time(),state->bbr->bottleneck_bandwidth*rtt*8);
+            fflush(state->bdp_file_pointer);
+
+            
+            if(state->maximum_bandwidth_captured < bw)
+            {
+              state->maximum_bandwidth_captured = bw;
+            }
+            
+            if(state->bbr->rtts_happened % 10 == 0)
+            {
+              if(state->bbr->bottleneck_bandwidth < state->maximum_bandwidth_captured)
+                state->bbr->bottleneck_bandwidth = state->maximum_bandwidth_captured;
+            }
+          }
+        }
+        
+        on_ack_bbr_state_chk(state->bbr);
+        state->send_window =state->ctcp_config->send_window= state->bbr->cwnd;
+        if(state->app_limited_until > 0)
+          state->app_limited_until = state->app_limited_until - ntohs(seg->len);
+        state->sliding_window_size_bytes = state->sliding_window_size_bytes - ntohs(seg->len);
+        state->inflight_data = state->inflight_data - ntohs(seg->len);
+        free(ll_remove(state->unacknowledged_segments,seg_node));
+        
+        if(ll_length(state->output_pending_segments) > 0)
+        {
+          if(ll_length(state->output_pending_segments)>0)
+          {   
+            while((state->sliding_window_size_bytes < state->send_window) &&(ll_length(state->output_pending_segments)>0))
+            {
+              ll_add(state->unacknowledged_segments,ll_front(state->output_pending_segments)->object);
+              void **buf = (ll_front(state->output_pending_segments)->object);
+              ctcp_segment_t *seg = (ctcp_segment_t*)buf[0];
+              state->sliding_window_size_bytes = state->sliding_window_size_bytes + ntohs(seg->len);
+              ll_remove(state->output_pending_segments,ll_front(state->output_pending_segments));
+            }
+          }
+          int can_send_how_much = state->sliding_window_size_bytes - state->inflight_data;
+          int bdp = (state->bbr->rt_prop)* state->bbr->bottleneck_bandwidth * 2.89;
+          ll_node_t *current_node;
+          
+          if(state->inflight_data >= bdp && bdp!=0)
+            return;
+          
+          if((ll_length(state->output_pending_segments)== 0) && (can_send_how_much ==0))
+          {
+            state->app_limited_until = state->inflight_data;
+            return;
+          }
+          
+          for(current_node = state->unacknowledged_segments->head; current_node!=NULL; current_node = current_node->next)
+          {
+            void **buf = current_node->object;
+            ctcp_segment_t *segment = (ctcp_segment_t*)buf[0];
+            if(*((int *)(buf[2])) == 0)
+            {
+              *((long *)(buf[1])) = state->last_send_time = current_time();
+              if(state->app_limited_until >0)
+                *((int *)(buf[4])) = 1;
+              usleep(2000);
+              while(1)
+              {
+                if(current_time() >= state->bbr->transmit_time_for_next_packet)
+                {
+                  state->bbr->data_in_probe_bw_mode += ntohs(segment->len);
+                  conn_send(state->conn,segment,ntohs(segment->len));
+                  break;
+                }
+              }
+              *((int *)(buf[2])) = 1;
+              
+              state->inflight_data += ntohs(segment->len);
+              if ((state->maximum_bandwidth_captured != -1) && (state->maximum_bandwidth_captured !=0))
+                state->bbr->transmit_time_for_next_packet = current_time() + ntohs(segment->len) /(state->bbr->pacing_gain  * state->bbr->bottleneck_bandwidth);
+              else
+                state->bbr->transmit_time_for_next_packet = 0;
+            }
+          }
+        }
+      }
+      else 
+      {
+        break;
+      }
+    }
+  }
+  int data_len = ntohs(segment->len)-sizeof(ctcp_segment_t);
+  state->most_recent_received_acknowledgement = ntohl(segment->seqno) + data_len;
+  if(ntohl(segment->seqno) <   state->second_most_recent_acknowledgement)
+  {
+    dup_flag = 1;
+  }
+  else
+  {
+    state->second_most_recent_acknowledgement = state->most_recent_received_acknowledgement;
+    dup_flag =0;
+  }
+  char *segment_data_buf = (char*)malloc(sizeof(char)*MAX_SEG_DATA_SIZE);
+  strncpy(segment_data_buf,segment->data,data_len);
+
+  
+  if(ntohs(segment->len) > sizeof(ctcp_segment_t))
+  { 
+    if(dup_flag ==0)
+    {
+      send_segment(state,NULL,0,TH_ACK,0);
+      conn_output(state->conn,segment_data_buf,data_len);
+    }
+  }
+   free(segment);
+   free(segment_data_buf);
 }
 
 void ctcp_output(ctcp_state_t *state)
 {
-  ll_node_t* head;
-  ctcp_segment_t* seg_pointer;
-  size_t bufspace;
-  int data_byte_count;
-  int val;
-  int num_segments_output = 0;
-
-  if (state == NULL)
-    return;
-
-  while (ll_length(state->rx_state.output_pending_segments) != 0)
-  {
-    head = ll_front(state->rx_state.output_pending_segments);
-    seg_pointer = (ctcp_segment_t*) head->object;
-
-    data_byte_count = ntohs(seg_pointer->len) - sizeof(ctcp_segment_t);
-    if (data_byte_count)
-    {
-      if ( ntohl(seg_pointer->seqno) != state->rx_state.sequence_number_last_accepted + 1)
-        return;
-
-      bufspace = conn_bufspace(state->conn);
-      if (bufspace < data_byte_count)
-        return;
-
-      val = conn_output(state->conn, seg_pointer->data, data_byte_count);
-      if (val == -1)
-      {
-        ctcp_destroy(state);
-        return;
-      }
-      num_segments_output++;
-    }
-
-    if (data_byte_count)
-      state->rx_state.sequence_number_last_accepted += data_byte_count;
-
-    if ((!state->rx_state.got_fin_flag_set_segment) && (seg_pointer->flags & TH_FIN))
-    {
-      state->rx_state.got_fin_flag_set_segment = true;
-      state->rx_state.sequence_number_last_accepted++;
-      conn_output(state->conn, seg_pointer->data, 0);
-      num_segments_output++;
-    }
-
-    free(seg_pointer);
-    ll_remove(state->rx_state.output_pending_segments, head);
-  }
-
-  if (num_segments_output)
-    ctcp_send_info_segment(state);
-}
-
-void ctcp_send_info_segment(ctcp_state_t *state)
-{
-  ctcp_segment_t ctcp_seg;
-  ctcp_seg.ackno = htonl(state->rx_state.sequence_number_last_accepted + 1), ctcp_seg.seqno = htonl(0), ctcp_seg.len   = sizeof(ctcp_segment_t), ctcp_seg.flags = TH_ACK;
-  ctcp_seg.window = htons(state->ctcp_config.recv_window), ctcp_seg.cksum = 0, ctcp_seg.cksum = cksum(&ctcp_seg, sizeof(ctcp_segment_t));
-
-  conn_send(state->conn, &ctcp_seg, sizeof(ctcp_segment_t));
+  send_segment(state,NULL,0,TH_ACK,0);
 }
 
 void ctcp_timer()
-{
-  ctcp_state_t * current_state;
+{  
+  ctcp_state_t *curr_state = state_list;
+  while (curr_state!= NULL)
+  {   
+    if(curr_state->last_ctcp_timer_call ==0)
+      curr_state->last_ctcp_timer_call = current_time();
 
-  if (state_list == NULL) return;
+    if(curr_state->bbr->rtt_minimum_check_for_window_ms > 0) 
+      curr_state->bbr->rtt_minimum_check_for_window_ms = curr_state->bbr->rtt_minimum_check_for_window_ms - (current_time() - curr_state->last_ctcp_timer_call), curr_state->last_ctcp_timer_call = current_time();
 
-  current_state = state_list;
-  while (current_state != NULL)
-  {
-    ctcp_output(current_state);
-    ctcp_send(current_state);
-
-    if ((current_state->rx_state.got_fin_flag_set_segment) && (current_state->tx_state.got_ctrl_d) && (ll_length(current_state->tx_state.wrapped_unacknowledged_segs) == 0) && (ll_length(current_state->rx_state.output_pending_segments) == 0))
+    if(curr_state->bbr->rtt_minimum_check_for_window_ms <0)
     {
-    	if ((current_time() - current_state->FIN_WAIT_start_time) > (2*60000))
-    		ctcp_destroy(current_state);
-      	else if (current_state->FIN_WAIT_start_time == 0)
-        	current_state->FIN_WAIT_start_time = current_time();        
+      if( curr_state->bbr->currently_executing_mode == PROBE_RTT)
+        curr_state->bbr->rt_prop = curr_state->minimum_rtt_captured;
+
+      if((curr_state->bbr->rt_prop <= current_time() - curr_state->bbr->rtt_change_timestamp) && curr_state->bbr->currently_executing_mode == PROBE_BW)
+          curr_state->bbr->probe_rtt_begin = curr_state->bbr->rtts_happened, curr_state->bbr->currently_executing_mode = PROBE_RTT;
+
+      if(curr_state->minimum_rtt_captured < curr_state->bbr->rt_prop)
+      {
+        curr_state->bbr->rt_prop = curr_state->minimum_rtt_captured;
+
+        if(curr_state->bbr->currently_executing_mode == PROBE_RTT)
+          curr_state->bbr->currently_executing_mode = STARTUP;
+
+        if(curr_state->bbr->currently_executing_mode == PROBE_BW)
+            curr_state->bbr->probe_rtt_begin = curr_state->bbr->rtts_happened, curr_state->bbr->currently_executing_mode = PROBE_RTT;
+      }
+      if(curr_state->minimum_rtt_captured < curr_state->bbr->rt_prop)
+        curr_state->bbr->rt_prop = curr_state->minimum_rtt_captured, curr_state->bbr->rtt_change_timestamp = current_time();
+      
+      curr_state->bbr->rtt_minimum_check_for_window_ms = 10000;
     }
-    current_state = current_state->next;
+
+    ll_node_t *curr_segment;
+    for(curr_segment = curr_state->unacknowledged_segments->head; curr_segment!=NULL; curr_segment=curr_segment->next)
+    {
+      void **buf = (curr_segment->object);
+      if((( current_time() - *((long*)buf[1]) > curr_state->ctcp_config->rt_timeout)&& (*((int*)buf[3])<5)))
+      {
+        ctcp_segment_t *seg = (ctcp_segment_t*)buf[0];
+        *((long*)buf[1]) = current_time();
+        curr_state->sliding_window_size_bytes = curr_state->sliding_window_size_bytes - ntohs(seg->len);
+        *((int*)buf[3]) = *((int*)buf[3]) + 1;
+        conn_send(curr_state->conn,seg,ntohs(seg->len));
+      }
+      
+      if(*((int*)buf[3]) >=5)
+      {
+        ctcp_destroy(curr_state);
+        break;
+      }
+    }
+    curr_state=curr_state->next;
   }
 }

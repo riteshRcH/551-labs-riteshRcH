@@ -1,4 +1,5 @@
 #include "ctcp_bbr.h"
+#include <stdlib.h>
 
 struct bbr* bbr_init_state()
 {
